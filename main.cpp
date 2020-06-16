@@ -29,7 +29,7 @@ std::list<int> _clients;
 
 struct config{
   int port = 4555;
-  int messSz = 12;
+  int messSz = 188;
   int epfd = 0;
 } cng;
 
@@ -163,8 +163,14 @@ int messageHandler(int client){
   int len = 0;
   CHECK(len = recv(client, (void*)mess.data(), cng.messSz + 1, 0), return -1);
   
+  // client disconnect?
+  if (len == 0){
+    epoll_ctl(cng.epfd, EPOLL_CTL_DEL, client, nullptr);
+    _clients.remove(client);
+    CHECK(close(client), exit(-1));  
+  }
   // the client sent more data than possible
-  if (len == cng.messSz + 1){  
+  else if (len == cng.messSz + 1){  
     do{
       len = recv(client, (void*)mess.data(), cng.messSz + 1, 0);
     }while(len == cng.messSz + 1);  
