@@ -2,10 +2,8 @@
 #include <string>
 #include <chrono>
 
-#include <time.h>
 #include <signal.h>
 #include <cstring>
-#include <strings.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -166,14 +164,8 @@ int main(int argc, char* argv[]){
 
 int messageHandler(client& sender){
 
-  std::string mess,
-              header = "Man #" + std::to_string(sender.fd) + " talk: '",
-              footer = "'\n";
-  
-  size_t headSz = header.size(),
-         footSz = footer.size(),
-         maxMessSz = cng.messSz + headSz + footSz + 1;
-  mess.resize(maxMessSz);
+  std::string mess;
+  mess.resize(cng.messSz + 1);
   
   // get new message from client
   int lenMess = 0, count = 0;
@@ -219,6 +211,10 @@ int messageHandler(client& sender){
       return 0;
     }
     else{ 
+      std::string header = "Man #" + std::to_string(sender.fd) + " talk: '",
+                  footer = "'\n";  
+      size_t headSz = header.size(),
+             footSz = footer.size();
       for(auto& clt : _clients){
         if(clt.fd != sender.fd){
           std::string smess = header + std::string(mess.data(), lenMess - 1) + footer;
