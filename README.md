@@ -1,6 +1,6 @@
 # serg
 
-How use: ./serg [port = 4455] [messMaxSz = 188]
+How use: ./serg [port] [messMaxSz] [toutMS]
 
 
 # Example

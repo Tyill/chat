@@ -1,6 +1,8 @@
 #include <list>
 #include <string>
+#include <chrono>
 
+#include <time.h>
 #include <signal.h>
 #include <cstring>
 #include <strings.h>
@@ -16,9 +18,6 @@
 #include "aux.h"
 
 
-std::list<int> _clients;
-
-
 #define EPOLL_SZ 10000
 
 #define CHECK(f, ret)   \
@@ -29,11 +28,18 @@ std::list<int> _clients;
 
 struct config{
   int port = 4555;
-  int messSz = 188;
+  int messSz = 180;
   int epfd = 0;
+  int toutMS = 1000;
 } cng;
 
-int messageHandler(int client);
+struct client{
+  int fd;
+  std::chrono::_V2::high_resolution_clock::time_point tmPoint;
+};
+std::list<client> _clients;
+
+int messageHandler(client& client);
 
 void closeHandler(int sig){
   if (cng.epfd){
@@ -47,7 +53,7 @@ int main(int argc, char* argv[]){
   //// args cli 
   if (argc > 1){
     if (std::string(argv[1]) == "--help"){
-      printf("How use: ./serg [port = 4455] [messMaxSz = 188]\n");
+      printf("How use: ./serg [port] [messMaxSz] [toutMS]\n");
       exit(0);
     } 
     if (isNumber(argv[1])){
@@ -56,6 +62,9 @@ int main(int argc, char* argv[]){
   }
   if ((argc > 2) && isNumber(argv[2])){
     cng.messSz = atoi(argv[2]);
+  }
+  if ((argc > 3) && isNumber(argv[3])){
+    cng.toutMS = atoi(argv[3]);
   }
   signal(SIGINT, closeHandler);
   signal(SIGTERM, closeHandler);
@@ -112,32 +121,39 @@ int main(int argc, char* argv[]){
     for(int i = 0; i < eventsCount; ++i){
       if(events[i].data.fd == listener){
         sockaddr_in clt_addr;
-        int client = 0;
-        CHECK(client = accept(listener, (sockaddr*)&clt_addr, &socklen), exit(-1));
+        int hClient = 0;
+        CHECK(hClient = accept(listener, (sockaddr*)&clt_addr, &socklen), exit(-1));
         
         // nonblocking socket
-        CHECK(fcntl(client, F_SETFL, fcntl(client, F_GETFD, 0) | O_NONBLOCK), exit(-1));
+        CHECK(fcntl(hClient, F_SETFL, fcntl(hClient, F_GETFD, 0) | O_NONBLOCK), exit(-1));
 
         // set new client to event template
-        ev.data.fd = client;
+        ev.data.fd = hClient;
 
         // add new client to epoll
-        CHECK(epoll_ctl(cng.epfd, EPOLL_CTL_ADD, client, &ev), exit(-1));
+        CHECK(epoll_ctl(cng.epfd, EPOLL_CTL_ADD, hClient, &ev), exit(-1));
 
         // save client
-        _clients.push_back(client);
+        _clients.push_back(client{hClient});
         
         // send initial welcome message to client
-        std::string mess = "Welcome to chat! You is: Man #" + std::to_string(client) + "\n";
-        CHECK(send(client, mess.c_str(), mess.size() + 1, 0), exit(-1));
+        std::string mess = "Welcome to chat! You is: Man #" + std::to_string(hClient) + "\n";
+        CHECK(send(hClient, mess.c_str(), mess.size() + 1, 0), exit(-1));
       }   
       else if (events[i].events & (EPOLLHUP | EPOLLERR)){ 
         epoll_ctl(cng.epfd, EPOLL_CTL_DEL, events[i].data.fd, &ev);
-        _clients.remove(events[i].data.fd);
+        int fd = events[i].data.fd;
+        _clients.remove_if([fd](const client& clt){
+          return fd == clt.fd;
+        });
         CHECK(close(events[i].data.fd), exit(-1));    
       }
       else if (events[i].events & EPOLLIN){ 
-        messageHandler(events[i].data.fd);        
+        int fd = events[i].data.fd;
+        auto itClt = std::find_if(_clients.begin(), _clients.end(), [fd](const client& clt){
+          return fd == clt.fd;
+        });
+        messageHandler(*itClt);        
       }          
     }
   }
@@ -148,10 +164,10 @@ int main(int argc, char* argv[]){
   return 0;
 }
 
-int messageHandler(int client){
+int messageHandler(client& sender){
 
   std::string mess,
-              header = "Man #" + std::to_string(client) + " talk: '",
+              header = "Man #" + std::to_string(sender.fd) + " talk: '",
               footer = "'\n";
   
   size_t headSz = header.size(),
@@ -160,38 +176,56 @@ int messageHandler(int client){
   mess.resize(maxMessSz);
   
   // get new message from client
-  int len = 0;
-  CHECK(len = recv(client, (void*)mess.data(), cng.messSz + 1, 0), return -1);
-  
-  // client disconnect?
-  if (len == 0){
-    epoll_ctl(cng.epfd, EPOLL_CTL_DEL, client, nullptr);
-    _clients.remove(client);
-    CHECK(close(client), exit(-1));  
-  }
-  // the client sent more data than possible
-  else if (len == cng.messSz + 1){  
-    do{
-      len = recv(client, (void*)mess.data(), cng.messSz + 1, 0);
-    }while(len == cng.messSz + 1);  
+  int lenMess = 0, count = 0;
+  do{
+    count = recv(sender.fd, (void*)mess.data(), cng.messSz + 1, 0);
+    if (count > 0){ 
+      lenMess += count;
+    }
+  }while(count == cng.messSz + 1);
+
+  // client sent more data than possible?
+  if (lenMess > cng.messSz + 1){
     std::string mess = "Server talk: 'Sent more data than possible!'\n";
-    CHECK(send(client, mess.c_str(), mess.size() + 1, 0), return -1);
+    CHECK(send(sender.fd, mess.c_str(), mess.size() + 1, 0), return -1);
+    return 0;
+  } 
+
+  // client disconnect?
+  if (lenMess == 0){
+    epoll_ctl(cng.epfd, EPOLL_CTL_DEL, sender.fd, nullptr);
+    _clients.remove_if([&sender](const client& clt){
+      return sender.fd == clt.fd;
+    });
+    CHECK(close(sender.fd), exit(-1));  
     return 0;
   }
+   
   // send this message to everyone else
-  else if (len > 0){
+  if (lenMess > 0){
+    
+     // check timeout
+    auto cTm = std::chrono::high_resolution_clock::now();
+    if ( std::chrono::duration<double, std::milli>(cTm - sender.tmPoint).count() < cng.toutMS){
+      std::string mess = "Server talk: 'You can’t send messages so often!'\n";
+      CHECK(send(sender.fd, mess.c_str(), mess.size() + 1, 0), return -1);
+      return 0;
+    }
+    sender.tmPoint = cTm;
+    
     if(_clients.size() == 1){
       std::string mess = "Server talk: 'None connected to server except you!'\n";
-      CHECK(send(client, mess.c_str(), mess.size() + 1, 0), return -1);
+      CHECK(send(sender.fd, mess.c_str(), mess.size() + 1, 0), return -1);
       return 0;
-    }else{    
-      for(auto clt : _clients){
-        if(clt != client){
-          mess = header + std::string(mess.data(), len - 1) + footer;
-          CHECK(send(clt, mess.c_str(), headSz + len + footSz, 0), return -1);
+    }
+    else{ 
+      for(auto& clt : _clients){
+        if(clt.fd != sender.fd){
+          std::string smess = header + std::string(mess.data(), lenMess - 1) + footer;
+          CHECK(send(clt.fd, smess.c_str(), headSz + lenMess + footSz, 0), return -1);
         }
       }
     }
   }
-  return len;
+  return lenMess;
 }
