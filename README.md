@@ -1,4 +1,4 @@
-# serg
+# chat
 
 How use: ./serg [port] [messMaxSz] [toutMS]
 
